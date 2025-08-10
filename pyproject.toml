@@ -1,0 +1,16 @@
+[project]
+name = "signer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "paramiko>=3.5.1",
+    "sshkey-tools>=0.11.3",
+]
+
+[dependency-groups]
+dev = [
+    "ipdb>=0.13.13",
+    "ipython>=8.18.1",
+]
