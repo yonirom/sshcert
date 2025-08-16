@@ -3,125 +3,193 @@ import socket
 import sys
 import base64
 import threading
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 from sshkey_tools.cert import SSHCertificate, CertificateFields
 from sshkey_tools.keys import PublicKey, PrivateKey
+import yaml
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
+# Import the config module
+import config as config_module
 
 # The pre-authentication banner text
 PRE_AUTH_BANNER = """
-**********************
-* CARTIFICATE SIGNER *
-**********************
+==================================================
+SSH Certificate Signing Server
+==================================================
+This server signs SSH certificates for authorized users.
+Please contact system administrator for access.
+==================================================
 """
 
-# THIS IS FOR DEMONSTRATION ONLY AND IS HIGHLY INSECURE FOR PRODUCTION USE.
-# DO NOT USE THIS IN A REAL-WORLD SERVER.
+# Configuration
 SIGN_PASSWORD = "wiki"
+SIGN_KEY_PATH = "ca"
+CERT_VALIDITY = timedelta(days=365)
+HOSTFILE = open("hostfile", "r")
 
-HOSTFILE = "hostfile"
-
+USER_SSH_CERTIFICATE_TYPE = 1
+HOST_SSH_CERTIFICATE_TYPE = 2
 
 CA_PRIVATE_KEY_FILE = "ca"
 
 CA_CERTIFICATE_PRIVATE_KEY = PrivateKey.from_file(CA_PRIVATE_KEY_FILE)
 
-USER_SSH_CERTIFICATE_TYPE = 1
-HOST_SSH_CERTIFICATE_TYPE = 2
 
 
-
-def sign_key(ssh_pubkey: paramiko.PKey, username: str):
-    print(username)
-    sshtools_pubkey = PublicKey.from_string(ssh_pubkey.get_name() + " " + base64.b64encode(ssh_pubkey.asbytes()).decode("ascii"))
-    certificate: SSHCertificate = SSHCertificate.create(
-            subject_pubkey=sshtools_pubkey,
-            ca_privkey=CA_CERTIFICATE_PRIVATE_KEY)
-    certificate.fields.extensions = [
-                                    "permit-pty",
-                                    "permit-X11-forwarding",
-                                    "permit-agent-forwarding",
-                                    "permit-port-forwarding",
-                                    "permit-user-rc"
-                                    ]
-    certificate.fields.cert_type = USER_SSH_CERTIFICATE_TYPE
-    certificate.fields.principals = ["meep", username]
-    certificate.fields.valid_after = datetime.now()
-    certificate.fields.valid_before = datetime.now() + timedelta(hours=24)
-    certificate.sign()
-    return certificate.to_string()
-
-class AllowAllKeyServer(paramiko.ServerInterface):
-    def __init__(self):
+class SSHCertSignerServerInterface(paramiko.ServerInterface):
+    def __init__(self, user_config: config_module.UserConfig):
+        self.user_config = user_config
         self.publickey:Optional[paramiko.PKey] = None
-        self.event = threading.Event()
+        self.username: Optional[str] = None
 
     def check_auth_publickey(self, username, key):
-        print(f"Auth attempt for user: {username} with public key type: {key.get_name()} {type(key)}")
-        print(f"{key.can_sign()}")
+        logger.info(f"Auth attempt for user: {username} with public key type: {key.get_name()} {type(key)}")
         # In a real server, you would check 'username' and 'key' against
         # your authorized_keys or a database of trusted public keys.
         # To accept ANY public key (DANGEROUS):
         self.publickey = key
+        self.username = username
         return paramiko.AUTH_PARTIALLY_SUCCESSFUL
         # For a secure server, you'd do something like:
         # if username == "myuser" and self.allowed_keys.has_key(key):
         #     return paramiko.AUTH_SUCCESSFUL
         # return paramiko.AUTH_FAILED
+ 
     def check_auth_password(self, username, password):
-         return paramiko.AUTH_SUCCESSFUL if password == SIGN_PASSWORD else paramiko.AUTH_FAILED
+        """Check password authentication."""
+        if password == SIGN_PASSWORD:
+            logger.info(f"Successful password authentication for user: {username}")
+            return paramiko.AUTH_SUCCESSFUL
+        else:
+            logger.warning(f"Failed password authentication attempt for user: {username}")
+            return paramiko.AUTH_FAILED
 
     def check_channel_request(self, kind, chanid):
         if kind == "session":
+            logger.info("allowing session")
             return paramiko.OPEN_SUCCEEDED
         return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
-
+    
+    def check_channel_pty_request(self, channel, term, width, height, pixelwidth, pixelheight, modes):
+        return True
+    
+    def check_channel_shell_request(self, channel):
+        return True 
+    
     def get_allowed_auths(self, username):
         return "password" if self.publickey else "publickey"
 
     def get_banner(self):
         return (PRE_AUTH_BANNER, "en-US")
 
-# ... (rest of the server setup, similar to paramiko's demo_server.py)
+def load_signing_key() -> PrivateKey:
+    """Load the signing private key."""
+    return PrivateKey.from_file(SIGN_KEY_PATH)
 
-host_key = paramiko.Ed25519Key.from_private_key_file(HOSTFILE)
+def sign_certificate(
+    signing_key: PrivateKey,
+    public_key: paramiko.PKey,
+    user_config: config_module.UserConfig
+) -> SSHCertificate:
+    """Sign an SSH certificate with the given parameters."""
+    logger.info(f"Signing certificate for user: {user_config.username}")
 
-try:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setblocking(True)
-    sock.bind(('', 2222)) # Bind to an unused port for testing
-    sock.listen(1)
-    print("Listening on port 2222...")
-    conn, addr = sock.accept()
-    print(f"Got a connection from {addr}")
+    # Create certificate fields
+    cert_fields = CertificateFields(
+        serial=0,
+        cert_type = USER_SSH_CERTIFICATE_TYPE,
+        principals=user_config.principals,
+        valid_after=datetime.now(),
+        valid_before=datetime.now() + timedelta(days=user_config.valid_for),
+        extensions=user_config.extensions
+    )
 
-    t = paramiko.Transport(conn)
-    t.add_server_key(host_key)
-    server:AllowAllKeyServer = AllowAllKeyServer()
-    t.start_server(server=server)
+    # Sign the certificate
 
-    channel = t.accept(20) # Wait for a channel to be opened
-    if channel is None:
-        print("No channel.")
-        sys.exit(1)
+    sshtools_pubkey = PublicKey.from_string(public_key.get_name() + " " + base64.b64encode(public_key.asbytes()).decode("ascii"))
+    certificate: SSHCertificate = SSHCertificate.create(
+            subject_pubkey=sshtools_pubkey,
+            ca_privkey=CA_CERTIFICATE_PRIVATE_KEY)
+    
+    certificate.sign()
+    logger.info(f"Certificate signed successfully for user: {user_config.username}")
+    return certificate.to_string()
 
-    print("Client authenticated and channel opened.")
-    # Here you would handle commands or shell access
-    if server.publickey is not None:
-        result = sign_key(server.publickey, t.get_username())
+def handle_client(client_socket, addr, app_config: config_module.AppConfig):
+    """Handle a client connection."""
+    logger.info(f"Connection from {addr}")
+    
+    # Create SSH server transport
+    transport = paramiko.Transport(client_socket)
+    transport.add_server_key(paramiko.RSAKey.from_private_key_file('hostfile'))
+    
+    # Set up the server
+    server = SSHCertSignerServerInterface(user_config=app_config.get_user_config(transport.get_username()))
+    
+    try:
+        transport.start_server(server=server)
+        logger.info("SSH server started successfully")
+        
+        # Handle the session
+        channel = transport.accept(20)
+        if channel is None:
+            logger.warning("No channel accepted")
+            return
+
+        # Process certificate signing requests
+        result = sign_certificate(load_signing_key(), server.publickey, app_config.get_user_config(transport.get_username()))
         channel.send(result)
-    channel.send_exit_status(0)
-    channel.close()
-    t.close()
-
-except Exception as e:
-    print(f"Error: {e}")
-finally:
-    if 't' in locals() and t:
-        t.close()
-    if 'sock' in locals() and sock:
-        sock.close()
+        channel.send_exit_status(0)
+        channel.close()
+        transport.close()
 
 
+            
+    except Exception as e:
+        logger.error(f"Error handling client: {e}")
+    finally:
+        transport.close()
+
+
+def main():
+    """Main function to start the SSH certificate signing server."""
+    # Load configuration if available
+    app_config: config_module.AppConfig = config_module.load_config("config.yaml")
+    logger.info("Configuration loaded successfully")
+
+    
+    # Create and start the SSH server
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.setblocking(True)
+
+    try:
+        server_socket.bind(('0.0.0.0', 2222))
+        server_socket.listen(5)
+        logger.info("SSH Certificate Signing Server started on port 2222")
+        
+        # Accept connections
+        while True:
+            client_socket, addr = server_socket.accept()
+            client_thread = threading.Thread(target=handle_client, args=(client_socket, addr, app_config))
+            client_thread.daemon = True
+            client_thread.start()
+
+    except KeyboardInterrupt:
+        logger.info("Server shutting down...")
+    except Exception as e:
+        logger.error(f"Server error: {e}")
+    finally:
+        server_socket.close()
+
+if __name__ == "__main__":
+    main()
