@@ -1,0 +1,35 @@
+default:
+  extensions:
+    - "permit-pty"
+    - "permit-X11-forwarding"
+    - "permit-agent-forwarding"
+    - "permit-port-forwarding"
+    - "permit-user-rc"
+  valid_for: 1
+users:
+  "john_doe":
+    password: "secure_password_123"
+    publickey: "ssh-rsa AAAAB3NzaC1yc2E..."
+    principals:
+      - "john_doe"
+      - "developer"
+    extensions:
+      - "permit-agent-forwarding"
+      - "permit-port-forwarding"
+  "jane_smith":
+    publickey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..."
+    principals:
+      - "jane_smith"
+      - "admin"
+      - "meep"
+    extensions:
+      - "permit-agent-forwarding"
+    valid_for: 2
+  bob_wilson:
+    password: "another_secure_pass"
+    principals:
+      - "bob_wilson"
+    extensions:
+      - "permit-port-forwarding"
+      - "permit-X11-forwarding"
+    valid_for: 5
