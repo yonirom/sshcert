@@ -9,22 +9,28 @@ import shutil
 
 CONFIG_FILE = "config.yaml"
 
+
 def load_config():
     return app_config.load_config(CONFIG_FILE)
 
+
 def password_hash(password: str) -> str:
     salt = os.urandom(16)
-    hashed_password = hashlib.scrypt(password.encode('utf-8'), salt=salt, n=2**18, r=256, p=16, maxmem=2**25)
+    hashed_password = hashlib.scrypt(password.encode(
+        'utf-8'), salt=salt, n=2**14, r=8, p=1, maxmem=2**25)
     return base64.b64encode(salt + hashed_password).decode('utf-8')
+
 
 def password_verify(password: str, hash: str) -> bool:
     decoded_hash = base64.b64decode(hash)
     recovered_salt = decoded_hash[:16]
     stored_hashed_password = decoded_hash[16:]
-    
-    computed_hashed_password = hashlib.scrypt(password.encode('utf-8'), salt=recovered_salt, n=2**18, r=256, p=16, maxmem=2**25)
-    
+
+    computed_hashed_password = hashlib.scrypt(password.encode(
+        'utf-8'), salt=recovered_salt, n=2**14, r=8, p=1)
+
     return computed_hashed_password == stored_hashed_password
+
 
 @click.command()
 @click.option('--username', required=True, help='Username of the user')
@@ -50,7 +56,7 @@ def main(username: str, password: str):
         with tempfile.NamedTemporaryFile('w', dir=os.path.dirname(CONFIG_FILE) or '.', delete=False, suffix='.tmp') as temp_file:
             yaml.dump(config.to_dict(), temp_file)
             temp_path = temp_file.name
-        
+
         # Atomically move the temporary file to the final destination
         shutil.move(temp_path, CONFIG_FILE)
     except Exception as e:
@@ -61,5 +67,7 @@ def main(username: str, password: str):
         return
 
     click.echo(f"Password for user {username} has been updated.")
+
+
 if __name__ == "__main__":
     main()

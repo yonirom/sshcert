@@ -19,7 +19,7 @@ hashvalue = base64.b64encode(salt + hashlib.scrypt(password, salt=salt, n=2**18,
 
 recovered_salt = base64.b64decode(hashvalue)[:16]
 
-verified_hash = base64.b64encode(recovered_salt + hashlib.scrypt(verify, salt=recovered_salt, n=8, r=8, p=1))
+verified_hash = base64.b64encode(recovered_salt + hashlib.scrypt(verify, salt=recovered_salt, n=2**14, r=8, p=1))
 
 
 print(hashvalue)
