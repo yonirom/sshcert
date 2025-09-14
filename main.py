@@ -1,7 +1,5 @@
-import paramiko
-import socket
-import base64
-import threading
+import asyncio
+import asyncssh
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -14,8 +12,6 @@ logging.basicConfig(
     level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-# Import the config module
 
 # The pre-authentication banner text
 PRE_AUTH_BANNER = """
@@ -31,7 +27,7 @@ Please contact system administrator for access.
 SIGN_PASSWORD = "wiki"
 SIGN_KEY_PATH = "ca"
 CERT_VALIDITY = timedelta(days=365)
-HOSTFILE = open("hostfile", "r")
+HOSTFILE = "hostfile"
 
 USER_SSH_CERTIFICATE_TYPE = 1
 HOST_SSH_CERTIFICATE_TYPE = 2
@@ -41,64 +37,82 @@ CA_PRIVATE_KEY_FILE = "ca"
 CA_CERTIFICATE_PRIVATE_KEY = PrivateKey.from_file(CA_PRIVATE_KEY_FILE)
 
 
-class SSHCertSignerServerInterface(paramiko.ServerInterface):
-
+class SSHCertSignerServer(asyncssh.SSHServer):
     def __init__(self, app_config: config_module.AppConfig):
-        super().__init__()
         self.app_config: config_module.AppConfig = app_config
         self.user_config: Optional[config_module.UserConfig] = None
-        self.publickey: Optional[paramiko.PKey] = None
-        self.username: Optional[str] = None
+        self._conn: asyncssh.SSHServerConnection = None
 
-    def check_auth_publickey(self, username, key):
+    def connection_made(self, conn: asyncssh.SSHServerConnection):
+        self._conn = conn
+        logger.info(f"Connection from {conn.get_extra_info('peername')[0]}")
+        conn.send_auth_banner(PRE_AUTH_BANNER)
+
+    def password_auth_supported(self):
+        return True
+
+    def public_key_auth_supported(self):
+        return True
+
+    async def validate_password(self, username, password):
         self.user_config = self.app_config.get_user_config(username)
-        logger.info(
-            f"Auth attempt for user: {username} with public key type: {
-                key.get_name()} {type(key)}"
-        )
-        # In a real server, you would check 'username' and 'key' against
-        # your authorized_keys or a database of trusted public keys.
-        # To accept ANY public key (DANGEROUS):
-        self.publickey = key
-        self.username = username
-        return paramiko.AUTH_PARTIALLY_SUCCESSFUL
-        # For a secure server, you'd do something like:
-        # if username == "myuser" and self.allowed_keys.has_key(key):
-        #     return paramiko.AUTH_SUCCESSFUL
-        # return paramiko.AUTH_FAILED
-
-    def check_auth_password(self, username, password):
-        """Check password authentication."""
         if not self.user_config:
-            return paramiko.AUTH_FAILED
+            raise asyncssh.PermissionDenied("User not found")
         if self.user_config.password_verify(password):
             logger.info(f"Successful password authentication for user: {username}")
-            return paramiko.AUTH_SUCCESSFUL
+            self._conn.set_extra_info(username=username)
+            return True
         else:
             logger.warning(
                 f"Failed password authentication attempt for user: {username}"
             )
-            return paramiko.AUTH_FAILED
+            raise asyncssh.PermissionDenied("Invalid password")
 
-    def check_channel_request(self, kind, chanid):
-        if kind == "session":
-            logger.info("allowing session")
-            return paramiko.OPEN_SUCCEEDED
-        return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
+    async def validate_public_key(self, username, key):
+        self.user_config = self.app_config.get_user_config(username)
+        logger.info(
+            f"Auth attempt for user: {username} with public key type: {key.algorithm}"
+        )
+        self._conn.set_extra_info(public_key=key)
+        self._conn.set_extra_info(username=username)
+        return False
 
-    def check_channel_pty_request(
-        self, channel, term, width, height, pixelwidth, pixelheight, modes
-    ):
-        return True
+    def connection_lost(self, exc):
+        if exc:
+            logger.error(f"Connection lost: {exc}")
+        else:
+            logger.info("Connection closed.")
 
-    def check_channel_shell_request(self, channel):
-        return True
 
-    def get_allowed_auths(self, username):
-        return "password" if self.publickey else "publickey"
 
-    def get_banner(self):
-        return (PRE_AUTH_BANNER, "en-US")
+class SSHCertSignerServerProcess():
+
+    def __init__(self, process: asyncssh.SSHServerProcess, app_config: config_module.AppConfig):
+        self.process: asyncssh.SSHServerProcess = process
+        self.app_config = app_config
+
+    @classmethod
+    async def handle_client(cls, process: asyncssh.SSHServerProcess, app_config: config_module.AppConfig):
+        await cls(process, app_config).run()
+
+    async def run(self):
+        try:
+            username = self.process.get_extra_info('username')
+            user_config = self.app_config.get_user_config(username)
+            public_key = self.process.get_extra_info('public_key')
+
+            result = sign_certificate(
+                load_signing_key(),
+                public_key,
+                user_config,
+            )
+            self.process.stdout.write(result)
+            self.process.exit(0)
+        except Exception as e:
+            logger.error(f"Error signing certificate: {e}")
+            self.process.stderr.write(f"Error signing certificate: {e}\n")
+            self.exit(1)
+
 
 
 def load_signing_key() -> PrivateKey:
@@ -108,9 +122,9 @@ def load_signing_key() -> PrivateKey:
 
 def sign_certificate(
     signing_key: PrivateKey,
-    public_key: paramiko.PKey,
+    public_key: asyncssh.SSHKey,
     user_config: config_module.UserConfig,
-) -> SSHCertificate:
+) -> str:
     """Sign an SSH certificate with the given parameters."""
     logger.info(f"Signing certificate for user: {user_config.username}")
 
@@ -125,60 +139,29 @@ def sign_certificate(
     )
 
     # Sign the certificate
-
-    sshtools_pubkey = PublicKey.from_string(
-        public_key.get_name()
-        + " "
-        + base64.b64encode(public_key.asbytes()).decode("ascii")
-    )
+    sshtools_pubkey = PublicKey.from_string(public_key.export_public_key().decode("utf-8"))
     certificate: SSHCertificate = SSHCertificate.create(
         subject_pubkey=sshtools_pubkey, ca_privkey=CA_CERTIFICATE_PRIVATE_KEY
     )
 
     certificate.sign()
     logger.info(
-        f"Certificate signed successfully for user: {
-            user_config.username}"
+        f"Certificate signed successfully for user: {user_config.username}"
     )
     return certificate.to_string()
 
 
-def handle_client(client_socket, addr, app_config: config_module.AppConfig):
-    """Handle a client connection."""
-    logger.info(f"Connection from {addr}")
-
-    # Create SSH server transport
-    transport = paramiko.Transport(client_socket)
-    transport.add_server_key(paramiko.RSAKey.from_private_key_file("hostfile"))
-
-    # Set up the server
-    server = SSHCertSignerServerInterface(app_config)
-
-    try:
-        transport.start_server(server=server)
-        logger.info("SSH server started successfully")
-
-        # Handle the session
-        channel = transport.accept(20)
-        if channel is None:
-            logger.warning("No channel accepted, closing connection")
-            return
-
-        # Process certificate signing requests
-        result = sign_certificate(
-            load_signing_key(),
-            server.publickey,
-            app_config.get_user_config(transport.get_username()),
-        )
-        channel.send(result)
-        channel.send_exit_status(0)
-        channel.close()
-        transport.close()
-
-    except Exception as e:
-        logger.error(f"Error handling client: {e}")
-    finally:
-        transport.close()
+async def start_server(app_config: config_module.AppConfig):
+    """Start the SSH server."""
+    await asyncssh.create_server(
+        lambda: SSHCertSignerServer(app_config),
+        "0.0.0.0",
+        2222,
+        server_host_keys=[HOSTFILE],
+        process_factory=lambda p: SSHCertSignerServerProcess.handle_client(p, app_config)
+    )
+    logger.info("SSH Certificate Signing Server started on port 2222")
+    await asyncio.get_running_loop().create_future()
 
 
 def main():
@@ -189,31 +172,12 @@ def main():
     )
     logger.info("Configuration loaded successfully")
 
-    # Create and start the SSH server
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.setblocking(True)
-
     try:
-        server_socket.bind(("0.0.0.0", 2222))
-        server_socket.listen(5)
-        logger.info("SSH Certificate Signing Server started on port 2222")
-
-        # Accept connections
-        while True:
-            client_socket, addr = server_socket.accept()
-            client_thread = threading.Thread(
-                target=handle_client, args=(client_socket, addr, app_config)
-            )
-            client_thread.daemon = True
-            client_thread.start()
-
+        asyncio.run(start_server(app_config))
     except KeyboardInterrupt:
         logger.info("Server shutting down...")
     except Exception as e:
         logger.error(f"Server error: {e}")
-    finally:
-        server_socket.close()
 
 
 if __name__ == "__main__":
