@@ -66,7 +66,7 @@ def cli(ctx, config_file):
 @click.option("--publickey", help="User public key.")
 @click.option("--principals", help="Comma-separated list of principals.")
 @click.option("--extensions", help="Comma-separated list of extensions.")
-@click.option("--valid-for", type=int, help="Validity period in days.")
+@click.option("--valid-for", type=str, help="Validity period in days.")
 @click.pass_context
 def create(
     ctx,
@@ -120,7 +120,7 @@ def create(
 @click.option("--publickey", help="New user public key.")
 @click.option("--principals", help="New comma-separated list of principals.")
 @click.option("--extensions", help="New comma-separated list of extensions.")
-@click.option("--valid-for", type=int, help="New validity period in days.")
+@click.option("--valid-for", type=str, help="New validity period in days.")
 @click.pass_context
 def update(
     ctx,

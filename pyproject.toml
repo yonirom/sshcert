@@ -10,6 +10,8 @@ dependencies = [
     "click>=8.1.7",
     "asyncssh>=2.14.2",
     "fido2>=2.0.0",
+    "pytimeparse>=1.1.8",
+    "watchfiles>=1.1.0",
 ]
 
 [dependency-groups]

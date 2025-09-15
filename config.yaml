@@ -5,7 +5,7 @@ default:
   - permit-agent-forwarding
   - permit-port-forwarding
   - permit-user-rc
-  valid_for: 1
+  valid_for: 1d
 users:
   bob_wilson:
     extensions:
@@ -14,7 +14,8 @@ users:
     password: another_secure_pass
     principals:
     - bob_wilson
-    valid_for: 5
+    valid_for: 7d
+  floppy: {}
   jane_smith:
     extensions:
     - permit-agent-forwarding
@@ -34,5 +35,7 @@ users:
     - developer
     publickey: ssh-rsa AAAAB3NzaC1yc2E...
   meepmeep:
-    publickey: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5...
     password: IT5Ss6nuESYFb3YGoeDtpir+oVBbyb0pr5iJPWt6LmYoMgmILEhlkzK0AC/gioRHnzgxhq9LoBjsRD/hS/u9dG0eILSA/JhVtrRF6AgKeCg=
+    publickey: sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIH4nBbSR/F5ixbvGqIjqC0zFfF0mXxda4trABsjukqShAAAABHNzaDo=
+      meepmeep@miramax
+    valid_for: 10d
