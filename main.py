@@ -3,8 +3,8 @@ import asyncssh
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
-from sshkey_tools.cert import SSHCertificate, CertificateFields
-from sshkey_tools.keys import PublicKey, PrivateKey
+from sshkey_tools.keys import PrivateKey
+from sshkey_tools.cert import CertificateFields, SSHCertificate
 import config as config_module
 
 # Configure logging
@@ -25,7 +25,6 @@ Please contact system administrator for access.
 
 # Configuration
 SIGN_PASSWORD = "wiki"
-SIGN_KEY_PATH = "ca"
 CERT_VALIDITY = timedelta(days=365)
 HOSTFILE = "hostfile"
 
@@ -40,24 +39,33 @@ CA_CERTIFICATE_PRIVATE_KEY = PrivateKey.from_file(CA_PRIVATE_KEY_FILE)
 class SSHCertSignerServer(asyncssh.SSHServer):
     def __init__(self, app_config: config_module.AppConfig):
         self.app_config: config_module.AppConfig = app_config
-        self.user_config: Optional[config_module.UserConfig] = None
-        self._conn: asyncssh.SSHServerConnection = None
+        self.user_config: config_module.UserConfig
 
     def connection_made(self, conn: asyncssh.SSHServerConnection):
         self._conn = conn
         logger.info(f"Connection from {conn.get_extra_info('peername')[0]}")
         conn.send_auth_banner(PRE_AUTH_BANNER)
 
-    def password_auth_supported(self):
+    def begin_auth(self, username: str) -> bool:
+        user_config: Optional[config_module.UserConfig] = (
+            self.app_config.get_user_config(username)
+        )
+        if not user_config:
+            raise asyncssh.PermissionDenied("User not found")
+        self.user_config = user_config
         return True
+
+    def password_auth_supported(self):
+        return not self.user_config.publickey
 
     def public_key_auth_supported(self):
-        return True
+        return not self.user_config.password
 
     async def validate_password(self, username, password):
-        self.user_config = self.app_config.get_user_config(username)
         if not self.user_config:
             raise asyncssh.PermissionDenied("User not found")
+        if not self.user_config.password:
+            return True
         if self.user_config.password_verify(password):
             logger.info(f"Successful password authentication for user: {username}")
             self._conn.set_extra_info(username=username)
@@ -69,10 +77,24 @@ class SSHCertSignerServer(asyncssh.SSHServer):
             raise asyncssh.PermissionDenied("Invalid password")
 
     async def validate_public_key(self, username, key):
-        self.user_config = self.app_config.get_user_config(username)
+        if not self.user_config:
+            raise asyncssh.PermissionDenied("User not found")
         logger.info(
-            f"Auth attempt for user: {username} with public key type: {key.algorithm}"
+            f"Auth attempt for user: {
+                username} with public key type: {key.algorithm}"
         )
+        if not self.user_config.publickey:
+            logger.info(
+                f"publickey authentication succeeded for {
+                    username} because no key defined for user"
+            )
+            return True
+        if key.export_public_key().decode("utf-8") == self.user_config.publickey:
+            logger.info(
+                f"publickey authentication succeeded for {
+                    username} because no key defined for user"
+            )
+            return True
         self._conn.set_extra_info(public_key=key)
         self._conn.set_extra_info(username=username)
         return False
@@ -84,25 +106,27 @@ class SSHCertSignerServer(asyncssh.SSHServer):
             logger.info("Connection closed.")
 
 
+class SSHCertSignerServerProcess:
 
-class SSHCertSignerServerProcess():
-
-    def __init__(self, process: asyncssh.SSHServerProcess, app_config: config_module.AppConfig):
+    def __init__(
+        self, process: asyncssh.SSHServerProcess, app_config: config_module.AppConfig
+    ):
         self.process: asyncssh.SSHServerProcess = process
         self.app_config = app_config
 
     @classmethod
-    async def handle_client(cls, process: asyncssh.SSHServerProcess, app_config: config_module.AppConfig):
+    async def handle_client(
+        cls, process: asyncssh.SSHServerProcess, app_config: config_module.AppConfig
+    ):
         await cls(process, app_config).run()
 
     async def run(self):
         try:
-            username = self.process.get_extra_info('username')
+            username = self.process.get_extra_info("username")
             user_config = self.app_config.get_user_config(username)
-            public_key = self.process.get_extra_info('public_key')
+            public_key = self.process.get_extra_info("public_key")
 
             result = sign_certificate(
-                load_signing_key(),
                 public_key,
                 user_config,
             )
@@ -111,17 +135,10 @@ class SSHCertSignerServerProcess():
         except Exception as e:
             logger.error(f"Error signing certificate: {e}")
             self.process.stderr.write(f"Error signing certificate: {e}\n")
-            self.exit(1)
-
-
-
-def load_signing_key() -> PrivateKey:
-    """Load the signing private key."""
-    return PrivateKey.from_file(SIGN_KEY_PATH)
+            self.process.exit(1)
 
 
 def sign_certificate(
-    signing_key: PrivateKey,
     public_key: asyncssh.SSHKey,
     user_config: config_module.UserConfig,
 ) -> str:
@@ -139,14 +156,17 @@ def sign_certificate(
     )
 
     # Sign the certificate
-    sshtools_pubkey = PublicKey.from_string(public_key.export_public_key().decode("utf-8"))
+    sshtools_pubkey = PublicKey.from_string(
+        public_key.export_public_key().decode("utf-8")
+    )
     certificate: SSHCertificate = SSHCertificate.create(
         subject_pubkey=sshtools_pubkey, ca_privkey=CA_CERTIFICATE_PRIVATE_KEY
     )
 
     certificate.sign()
     logger.info(
-        f"Certificate signed successfully for user: {user_config.username}"
+        f"Certificate signed successfully for user: {
+            user_config.username}"
     )
     return certificate.to_string()
 
@@ -158,7 +178,9 @@ async def start_server(app_config: config_module.AppConfig):
         "0.0.0.0",
         2222,
         server_host_keys=[HOSTFILE],
-        process_factory=lambda p: SSHCertSignerServerProcess.handle_client(p, app_config)
+        process_factory=lambda p: SSHCertSignerServerProcess.handle_client(
+            p, app_config
+        ),
     )
     logger.info("SSH Certificate Signing Server started on port 2222")
     await asyncio.get_running_loop().create_future()

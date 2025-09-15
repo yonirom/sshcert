@@ -31,7 +31,8 @@ class UserConfig:
     extensions: Optional[List[str]] = field(
         default_factory=lambda: GLOBAL_CONFIG.extensions
     )
-    valid_for: Optional[str] = field(default_factory=lambda: GLOBAL_CONFIG.valid_for)
+    valid_for: Optional[str] = field(
+        default_factory=lambda: GLOBAL_CONFIG.valid_for)
 
     def __post_init__(self):
         if self.principals is None:
@@ -70,9 +71,9 @@ class AppConfig:
                 self.users = {}
 
     def get_user_config(self, username: str) -> Optional[UserConfig]:
-        if username in self.users:
+        if self.users and username in self.users:
             return self.users[username]
-            return None
+        return None
 
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "AppConfig":
