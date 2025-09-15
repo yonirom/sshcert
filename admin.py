@@ -16,9 +16,10 @@ def load_config():
 
 def password_hash(password: str) -> str:
     salt = os.urandom(16)
-    hashed_password = hashlib.scrypt(password.encode(
-        'utf-8'), salt=salt, n=2**14, r=8, p=1, maxmem=2**25)
-    return base64.b64encode(salt + hashed_password).decode('utf-8')
+    hashed_password = hashlib.scrypt(
+        password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1, maxmem=2**25
+    )
+    return base64.b64encode(salt + hashed_password).decode("utf-8")
 
 
 def password_verify(password: str, hash: str) -> bool:
@@ -26,15 +27,16 @@ def password_verify(password: str, hash: str) -> bool:
     recovered_salt = decoded_hash[:16]
     stored_hashed_password = decoded_hash[16:]
 
-    computed_hashed_password = hashlib.scrypt(password.encode(
-        'utf-8'), salt=recovered_salt, n=2**14, r=8, p=1)
+    computed_hashed_password = hashlib.scrypt(
+        password.encode("utf-8"), salt=recovered_salt, n=2**14, r=8, p=1
+    )
 
     return computed_hashed_password == stored_hashed_password
 
 
 @click.command()
-@click.option('--username', required=True, help='Username of the user')
-@click.option('--password', required=True, help='Password for the user')
+@click.option("--username", required=True, help="Username of the user")
+@click.option("--password", required=True, help="Password for the user")
 def main(username: str, password: str):
     # Load configuration
     config = load_config()
@@ -53,7 +55,9 @@ def main(username: str, password: str):
     temp_path = None
     try:
         # Create a temporary file in the same directory to ensure atomic move
-        with tempfile.NamedTemporaryFile('w', dir=os.path.dirname(CONFIG_FILE) or '.', delete=False, suffix='.tmp') as temp_file:
+        with tempfile.NamedTemporaryFile(
+            "w", dir=os.path.dirname(CONFIG_FILE) or ".", delete=False, suffix=".tmp"
+        ) as temp_file:
             yaml.dump(config.to_dict(), temp_file)
             temp_path = temp_file.name
 

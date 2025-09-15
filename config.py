@@ -6,14 +6,14 @@ import hashlib
 import yaml
 
 
-GLOBAL_CONFIG: Optional["DefaultConfig"] = None
+GLOBAL_CONFIG: "DefaultConfig"
 
 
 @dataclass
 class DefaultConfig:
     extensions: Optional[List[str]] = None
     principals: Optional[List[str]] = None
-    valid_for: Optional[str] = None
+    valid_for: str = "1d"
 
     def __post_init__(self):
         if self.extensions is None:
@@ -31,8 +31,7 @@ class UserConfig:
     extensions: Optional[List[str]] = field(
         default_factory=lambda: GLOBAL_CONFIG.extensions
     )
-    valid_for: Optional[str] = field(
-        default_factory=lambda: GLOBAL_CONFIG.valid_for)
+    valid_for: str = field(default_factory=lambda: GLOBAL_CONFIG.valid_for)
 
     def __post_init__(self):
         if self.principals is None:
@@ -40,7 +39,7 @@ class UserConfig:
         if self.extensions is None:
             self.extensions = []
 
-    def password_hash(password: str) -> str:
+    def password_hash(self, password: str) -> str:
         salt = os.urandom(16)
         hashed_password = hashlib.scrypt(
             password.encode("utf-8"), salt=salt, n=2**14, r=2, p=1
@@ -48,6 +47,8 @@ class UserConfig:
         return base64.b64encode(salt + hashed_password).decode("utf-8")
 
     def password_verify(self, password: str) -> bool:
+        if self.password is None:
+            return False
         decoded_hash = base64.b64decode(self.password)
         recovered_salt = decoded_hash[:16]
         stored_hashed_password = decoded_hash[16:]

@@ -35,8 +35,7 @@ class TestAdmin(unittest.TestCase):
 
         # Test failed verification with an incorrect password
         incorrect_password = "wrong_password"
-        self.assertFalse(admin.password_verify(
-            incorrect_password, hashed_password))
+        self.assertFalse(admin.password_verify(incorrect_password, hashed_password))
 
         # Test with an empty password
         empty_password = ""
@@ -44,5 +43,5 @@ class TestAdmin(unittest.TestCase):
         self.assertTrue(admin.password_verify(empty_password, empty_hash))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
