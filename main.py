@@ -6,12 +6,15 @@ from typing import Optional, Tuple
 from asyncssh.connection import SSHServerConnectionOptions
 from asyncssh.public_key import SSHKey, SSHOpenSSHCertificate
 import config as config_module
+from watchfiles import awatch, Change, DefaultFilter
 
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+logging.getLogger("watchfiles.main").setLevel(logging.INFO)
 
 # The pre-authentication banner text
 PRE_AUTH_BANNER = """
@@ -123,37 +126,66 @@ def sign_certificate(user_config: config_module.UserConfig) -> Tuple[SSHKey, SSH
     principals = user_config.principals or user_config.username
     user_certificate: SSHOpenSSHCertificate= ca.generate_user_certificate(new_user_key, key_id="meepmeep", principals=principals, valid_after=datetime.now(), valid_before=user_config.valid_for)
     new_user_key.set_comment("woot")
-    user_certificate.set_comment("woot-cert")
 
     return new_user_key, user_certificate
 
 
-async def start_server(app_config: config_module.AppConfig):
-    """Start the SSH server."""
-    options: asyncssh.SSHServerConnectionOptions = SSHServerConnectionOptions(
-        server_factory=lambda: SSHCertSignerServer(app_config=app_config), 
-        server_version=f"CertSigner-{VERSION}",
-        server_host_keys=HOSTFILE,
-        agent_forwarding=True,
-        connect_timeout="5s",
-        login_timeout="10s")
-    await asyncssh.listen("0.0.0.0", 2222, reuse_address=True, options=options)
-    logger.info("SSH Certificate Signing Server started on port 2222")
-    await asyncio.get_running_loop().create_future()
+
+class EntryPoint():
+
+    def __init__(self) -> None:
+        self.load_config()
+
+    def load_config(self):
+        self.app_config: config_module.AppConfig = config_module.AppConfig.load_config(
+            "config.yaml"
+        )
+        logger.info("Configuration loaded successfully")
+
+
+    async def reload_config(self):
+        self.app_config: config_module.AppConfig = config_module.AppConfig.load_config(
+            "config.yaml"
+        )
+        logger.info("Configuration reloaded successfully")
+        
+
+    async def monitor_conf_dir(self, directory: str):
+        async for _ in awatch(directory, watch_filter=ConfigFilter(), recursive=False, force_polling=False):
+            await self.reload_config()
+
+    async def start_server(self):
+        """Start the SSH server."""
+        options: asyncssh.SSHServerConnectionOptions = SSHServerConnectionOptions(
+            server_factory=lambda: SSHCertSignerServer(app_config=self.app_config), 
+            server_version=f"CertSigner-{VERSION}",
+            server_host_keys=HOSTFILE,
+            agent_forwarding=True,
+            connect_timeout="5s",
+            login_timeout="10s")
+        await asyncssh.listen("0.0.0.0", 2222, reuse_address=True, options=options)
+        logger.info("SSH Certificate Signing Server started on port 2222")
+
+
+class ConfigFilter(DefaultFilter):
+    def __call__(self, change: Change, path: str) -> bool:
+        return ( super().__call__(change, path) and path.endswith("config.yaml") and change in (Change.added, Change.modified))
 
 
 async def main():
     """Main function to start the SSH certificate signing server."""
 
-    await start_server(app_config)
+    entry_point: EntryPoint = EntryPoint()
+
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(entry_point.monitor_conf_dir("."))
+        tg.create_task(entry_point.start_server())
+    # await asyncio.gather(entry_point.start_server(), entry_point.monitor_conf_dir("."))
+    # await asyncio.get_running_loop().create_future()
 
 
 if __name__ == "__main__":
 
-    app_config: config_module.AppConfig = config_module.AppConfig.load_config(
-        "config.yaml"
-    )
-    logger.info("Configuration loaded successfully")
 
     try:
         asyncio.run(main())
