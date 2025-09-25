@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 import asyncssh
 import logging
 from datetime import datetime
@@ -7,6 +8,7 @@ from asyncssh.connection import SSHServerConnectionOptions
 from asyncssh.public_key import SSHKey, SSHOpenSSHCertificate
 import config as config_module
 from watchfiles import awatch, Change, DefaultFilter
+from settings import Settings
 
 # Configure logging
 logging.basicConfig(
@@ -14,26 +16,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Disable noisy watchfiles
 logging.getLogger("watchfiles.main").setLevel(logging.INFO)
 
-# The pre-authentication banner text
-PRE_AUTH_BANNER = """
-==================================================
-SSH Certificate Signing Server
-==================================================
-This server signs SSH certificates for authorized users.
-Please contact system administrator for access.
-==================================================
-"""
-
-# Configuration
-HOSTFILE = "hostfile"
-VERSION = "0.1"
-
-USER_SSH_CERTIFICATE_TYPE = 1
-HOST_SSH_CERTIFICATE_TYPE = 2
-
-CA_PRIVATE_KEY_FILE = "ca"
+SETTINGS = Settings()
 
 
 class SSHCertSignerServer(asyncssh.SSHServer):
@@ -45,7 +31,7 @@ class SSHCertSignerServer(asyncssh.SSHServer):
     def connection_made(self, conn: asyncssh.SSHServerConnection):
         self._conn = conn
         logger.info(f"Connection from {conn.get_extra_info('peername')[0]}")
-        conn.send_auth_banner(PRE_AUTH_BANNER)
+        conn.send_auth_banner(SETTINGS.pre_auth_banner)
 
     async def begin_auth(self, username: str) -> bool:
         user_config: Optional[config_module.UserConfig] = (
@@ -71,7 +57,7 @@ class SSHCertSignerServer(asyncssh.SSHServer):
         self.agent_connection = await asyncssh.connect_agent(self._conn)
         keys = await self.agent_connection.get_keys()
         for key in keys:
-            if key.get_comment() == "woot":
+            if key.get_comment() == SETTINGS.installation_id:
                 await self.agent_connection.remove_keys([key])
 
         await self.agent_connection.add_keys(sign_certificate(self.user_config))
@@ -122,13 +108,12 @@ class SSHCertSignerServer(asyncssh.SSHServer):
 
 def sign_certificate(user_config: config_module.UserConfig) -> Tuple[SSHKey, SSHOpenSSHCertificate]:
     new_user_key: SSHKey = asyncssh.generate_private_key("ssh-ed25519")
-    ca: SSHKey = asyncssh.read_private_key(CA_PRIVATE_KEY_FILE)
+    ca: SSHKey = asyncssh.read_private_key(SETTINGS.ca_private_key_file)
     principals = user_config.principals or user_config.username
     user_certificate: SSHOpenSSHCertificate= ca.generate_user_certificate(new_user_key, key_id="meepmeep", principals=principals, valid_after=datetime.now(), valid_before=user_config.valid_for)
-    new_user_key.set_comment("woot")
+    new_user_key.set_comment(SETTINGS.installation_id)
 
     return new_user_key, user_certificate
-
 
 
 class EntryPoint():
@@ -138,19 +123,19 @@ class EntryPoint():
 
     def load_config(self):
         self.app_config: config_module.AppConfig = config_module.AppConfig.load_config(
-            "config.yaml"
+            SETTINGS.config_file
         )
         logger.info("Configuration loaded successfully")
 
 
     async def reload_config(self):
         self.app_config: config_module.AppConfig = config_module.AppConfig.load_config(
-            "config.yaml"
+            SETTINGS.config_file
         )
         logger.info("Configuration reloaded successfully")
         
 
-    async def monitor_conf_dir(self, directory: str):
+    async def monitor_conf_dir(self, directory: Path):
         async for _ in awatch(directory, watch_filter=ConfigFilter(), recursive=False, force_polling=False):
             await self.reload_config()
 
@@ -158,13 +143,12 @@ class EntryPoint():
         """Start the SSH server."""
         options: asyncssh.SSHServerConnectionOptions = SSHServerConnectionOptions(
             server_factory=lambda: SSHCertSignerServer(app_config=self.app_config), 
-            server_version=f"CertSigner-{VERSION}",
-            server_host_keys=HOSTFILE,
+            server_version=SETTINGS.server_version,
+            server_host_keys=SETTINGS.host_private_key_file,
             agent_forwarding=True,
             connect_timeout="5s",
             login_timeout="10s")
-        await asyncssh.listen("0.0.0.0", 2222, reuse_address=True, options=options)
-        logger.info("SSH Certificate Signing Server started on port 2222")
+        await asyncssh.listen(str(SETTINGS.listen_address), SETTINGS.listen_port, reuse_address=True, options=options)
 
 
 class ConfigFilter(DefaultFilter):
@@ -178,10 +162,8 @@ async def main():
     entry_point: EntryPoint = EntryPoint()
 
     async with asyncio.TaskGroup() as tg:
-        tg.create_task(entry_point.monitor_conf_dir("."))
+        tg.create_task(entry_point.monitor_conf_dir(SETTINGS.config_directory))
         tg.create_task(entry_point.start_server())
-    # await asyncio.gather(entry_point.start_server(), entry_point.monitor_conf_dir("."))
-    # await asyncio.get_running_loop().create_future()
 
 
 if __name__ == "__main__":

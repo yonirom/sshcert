@@ -5,6 +5,9 @@ import hashlib
 import os
 import tempfile
 import shutil
+from settings import Settings
+
+SETTINGS = Settings()
 
 
 def password_hash(password: str) -> str:
@@ -50,7 +53,7 @@ def save_config(config, config_file):
 
 @click.group()
 @click.option(
-    "--config-file", default="config.yaml", help="Path to the configuration file."
+    "--config-file", default=SETTINGS.config_file, help="Path to the configuration file."
 )
 @click.pass_context
 def cli(ctx, config_file):
@@ -64,6 +67,7 @@ def cli(ctx, config_file):
 @click.option("--password", help="User password.")
 @click.option("--password-stdin", is_flag=True, help="Read password from stdin.")
 @click.option("--publickey", help="User public key.")
+@click.option("--publickey-file", help="File to read user public key from.")
 @click.option("--principals", help="Comma-separated list of principals.")
 @click.option("--extensions", help="Comma-separated list of extensions.")
 @click.option("--valid-for", type=str, help="Validity period in days.")
@@ -74,6 +78,7 @@ def create(
     password,
     password_stdin,
     publickey,
+    publickey_file,
     principals,
     extensions,
     valid_for,
@@ -91,8 +96,24 @@ def create(
         )
         return
 
+    if publickey and publickey_file:
+        click.echo(
+            "Error: --publickey and --publickey-file are mutually exclusive.", err=True
+        )
+        return
+
     if password_stdin:
         password = click.prompt("Password", hide_input=True, confirmation_prompt=True)
+
+    if publickey_file:
+        try:
+            with open(publickey_file, "r") as f:
+                publickey = f.read().strip()
+        except FileNotFoundError:
+            click.echo(
+                f"Error: Public key file not found at '{publickey_file}'.", err=True
+            )
+            return
 
     user_data = {}
     if password:
@@ -118,6 +139,7 @@ def create(
 @click.option("--password", help="New user password.")
 @click.option("--password-stdin", is_flag=True, help="Read password from stdin.")
 @click.option("--publickey", help="New user public key.")
+@click.option("--publickey-file", help="File to read new user public key from.")
 @click.option("--principals", help="New comma-separated list of principals.")
 @click.option("--extensions", help="New comma-separated list of extensions.")
 @click.option("--valid-for", type=str, help="New validity period in days.")
@@ -128,6 +150,7 @@ def update(
     password,
     password_stdin,
     publickey,
+    publickey_file,
     principals,
     extensions,
     valid_for,
@@ -145,8 +168,24 @@ def update(
         )
         return
 
+    if publickey and publickey_file:
+        click.echo(
+            "Error: --publickey and --publickey-file are mutually exclusive.", err=True
+        )
+        return
+
     if password_stdin:
         password = click.prompt("Password", hide_input=True, confirmation_prompt=True)
+
+    if publickey_file:
+        try:
+            with open(publickey_file, "r") as f:
+                publickey = f.read().strip()
+        except FileNotFoundError:
+            click.echo(
+                f"Error: Public key file not found at '{publickey_file}'.", err=True
+            )
+            return
 
     user_data = config["users"][username]
     if password:
