@@ -1,0 +1,13 @@
+version: "3"
+
+services:
+  sshcert:
+    container_name: sshcert
+    image: ghcr.io/yonirom/sshcert:latest
+    environment:
+
+    volumes:
+      - ./.env:/.env
+      - ./keys:/keys/
+      - ./config:/config/
+    restart: unless-stopped
