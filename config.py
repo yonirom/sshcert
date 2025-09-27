@@ -5,6 +5,8 @@ import base64
 import hashlib
 from pathlib import Path
 import yaml
+import tempfile
+import shutil
 
 
 class DefaultConfig(BaseModel):
@@ -51,6 +53,19 @@ class AppConfig(BaseModel):
             return self.users[username]
         return None
 
+    def get_user_full_config(self, username: str) -> Optional[UserConfig]:
+        if self.users and username in self.users:
+            user_config_data = {}
+            user_config_data.update(self.users[username].model_dump())
+            for k, v in self.users[username].model_dump().items():
+                if not v:
+                    user_config_data[k] = self.default.model_dump().get(k)
+
+            return UserConfig(**user_config_data)
+        return None
+
+
+
     @classmethod
     def from_yaml(cls, yaml_path: str | Path) -> "AppConfig":
         """Load configuration from YAML file and create AppConfig object."""
@@ -65,8 +80,8 @@ class AppConfig(BaseModel):
         users_data = config_data.get("users", {})
         users_config = {}
         for username, user_data in users_data.items():
-            # Inherit from default config
-            user_config_data = default_config.model_dump()
+            # Don't Inherit from default config
+            user_config_data = {}
             user_config_data.update(user_data)
             user_config_data['username'] = username
             user_config = UserConfig(**user_config_data)
@@ -76,7 +91,31 @@ class AppConfig(BaseModel):
 
     def to_dict(self) -> dict:
         """Convert AppConfig object to dictionary."""
-        return self.model_dump(exclude_none=True)
+        return {
+            "default": self.default.model_dump(exclude_none=True),
+            "users": {
+                username: user.model_dump(exclude={"username"}, exclude_none=True)
+                for username, user in self.users.items()
+            },
+        }
+
+    def save_to_yaml(self, yaml_path: str | Path):
+        """Saves the configuration to the YAML file atomically."""
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                dir=os.path.dirname(str(yaml_path)) or ".",
+                delete=False,
+                suffix=".tmp",
+            ) as temp_file:
+                yaml.dump(self.to_dict(), temp_file, default_flow_style=False)
+                temp_path = temp_file.name
+            shutil.move(temp_path, yaml_path)
+        except Exception as e:
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+            raise e
 
     @classmethod
     def load_config(cls, config_filename: str | Path) -> "AppConfig":

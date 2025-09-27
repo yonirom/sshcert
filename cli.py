@@ -1,54 +1,9 @@
 import click
 import yaml
-import base64
-import hashlib
-import os
-import tempfile
-import shutil
 from settings import Settings
+from config import AppConfig, UserConfig
 
 SETTINGS = Settings()
-
-
-def password_hash(password: str) -> str:
-    salt = os.urandom(16)
-    hashed_password = hashlib.scrypt(
-        password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1
-    )
-    return base64.b64encode(salt + hashed_password).decode("utf-8")
-
-
-def load_config(config_file):
-    """Loads the YAML configuration file."""
-    print(f"Loading config from: {config_file}")
-    try:
-        with open(config_file, "r") as f:
-            return yaml.safe_load(f)
-    except FileNotFoundError:
-        print("Config file not found.")
-        return {"users": {}}
-
-
-def save_config(config, config_file):
-    """Saves the configuration to the YAML file atomically."""
-    print(f"Saving config to: {config_file}")
-    temp_path = None
-    try:
-        # Create a temporary file in the same directory to ensure atomic move
-        with tempfile.NamedTemporaryFile(
-            "w", dir=os.path.dirname(config_file) or ".", delete=False, suffix=".tmp"
-        ) as temp_file:
-            yaml.dump(config, temp_file, default_flow_style=False)
-            temp_path = temp_file.name
-
-        # Atomically move the temporary file to the final destination
-        shutil.move(temp_path, config_file)
-    except Exception as e:
-        # If the move fails, remove the temporary file if it exists
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
-        click.echo(f"Error saving configuration: {e}", err=True)
-        return
 
 
 @click.group()
@@ -58,8 +13,11 @@ def save_config(config, config_file):
 @click.pass_context
 def cli(ctx, config_file):
     """A CLI to manage the sshcertsigner configuration."""
-    print(f"CLI context created with config file: {config_file}")
-    ctx.obj = {"CONFIG_FILE": config_file}
+    try:
+        config = AppConfig.load_config(config_file)
+    except FileNotFoundError:
+        config = AppConfig()  # Create a new config if the file doesn't exist
+    ctx.obj = {"CONFIG_FILE": config_file, "CONFIG": config}
 
 
 @cli.command()
@@ -84,9 +42,10 @@ def create(
     valid_for,
 ):
     """Create a new user entry."""
+    config: AppConfig = ctx.obj["CONFIG"]
     config_file = ctx.obj["CONFIG_FILE"]
-    config = load_config(config_file)
-    if username in config.get("users", {}):
+
+    if config.get_user_config(username):
         click.echo(f"Error: User '{username}' already exists.")
         return
 
@@ -115,9 +74,7 @@ def create(
             )
             return
 
-    user_data = {}
-    if password:
-        user_data["password"] = password_hash(password)
+    user_data = {"username": username}
     if publickey:
         user_data["publickey"] = publickey
     if principals:
@@ -127,11 +84,16 @@ def create(
     if valid_for:
         user_data["valid_for"] = valid_for
 
-    if "users" not in config:
-        config["users"] = {}
-    config["users"][username] = user_data
-    save_config(config, config_file)
-    click.echo(f"User '{username}' created successfully.")
+    new_user = UserConfig(**user_data)
+    if password:
+        new_user.password = new_user.password_hash(password)
+
+    config.users[username] = new_user
+    try:
+        config.save_to_yaml(config_file)
+        click.echo(f"User '{username}' created successfully.")
+    except Exception as e:
+        click.echo(f"Error saving configuration: {e}", err=True)
 
 
 @cli.command()
@@ -156,9 +118,11 @@ def update(
     valid_for,
 ):
     """Update an existing user entry."""
+    config: AppConfig = ctx.obj["CONFIG"]
     config_file = ctx.obj["CONFIG_FILE"]
-    config = load_config(config_file)
-    if username not in config.get("users", {}):
+
+    user = config.get_user_config(username)
+    if not user:
         click.echo(f"Error: User '{username}' not found.")
         return
 
@@ -187,36 +151,131 @@ def update(
             )
             return
 
-    user_data = config["users"][username]
     if password:
-        user_data["password"] = password_hash(password)
+        user.password = user.password_hash(password)
     if publickey:
-        user_data["publickey"] = publickey
+        user.publickey = publickey
     if principals:
-        user_data["principals"] = principals.split(",")
+        user.principals = principals.split(",")
     if extensions:
-        user_data["extensions"] = extensions.split(",")
+        user.extensions = extensions.split(",")
     if valid_for:
-        user_data["valid_for"] = valid_for
+        user.valid_for = valid_for
 
-    save_config(config, config_file)
-    click.echo(f"User '{username}' updated successfully.")
+    try:
+        config.save_to_yaml(config_file)
+        click.echo(f"User '{username}' updated successfully.")
+    except Exception as e:
+        click.echo(f"Error saving configuration: {e}", err=True)
 
 
 @cli.command()
 @click.argument("username")
+@click.option(
+    "--password", "delete_password", is_flag=True, help="Delete password for the user."
+)
+@click.option(
+    "--publickey",
+    "delete_publickey",
+    is_flag=True,
+    help="Delete public key for the user.",
+)
+@click.option(
+    "--principals",
+    "delete_principals",
+    is_flag=True,
+    help="Delete principals for the user.",
+)
+@click.option(
+    "--valid-for",
+    "delete_valid_for",
+    is_flag=True,
+    help="Delete validity period for the user.",
+)
 @click.pass_context
-def delete(ctx, username):
-    """Delete a user entry."""
+def delete(
+    ctx, username, delete_password, delete_publickey, delete_principals, delete_valid_for
+):
+    """Delete a user entry or specific user keys."""
+    config: AppConfig = ctx.obj["CONFIG"]
     config_file = ctx.obj["CONFIG_FILE"]
-    config = load_config(config_file)
-    if username not in config.get("users", {}):
+
+    user = config.get_user_config(username)
+    if not user:
         click.echo(f"Error: User '{username}' not found.")
         return
 
-    del config["users"][username]
-    save_config(config, config_file)
-    click.echo(f"User '{username}' deleted successfully.")
+    keys_to_delete = any(
+        [delete_password, delete_publickey, delete_principals, delete_valid_for]
+    )
+
+    if not keys_to_delete:
+        del config.users[username]
+        try:
+            config.save_to_yaml(config_file)
+            click.echo(f"User '{username}' deleted successfully.")
+        except Exception as e:
+            click.echo(f"Error saving configuration: {e}", err=True)
+        return
+
+    if delete_password:
+        user.password = None
+        click.echo(f"Password for user '{username}' deleted.")
+    if delete_publickey:
+        user.publickey = None
+        click.echo(f"Public key for user '{username}' deleted.")
+    if delete_principals:
+        user.principals = config.default.principals
+        click.echo(f"Principals for user '{username}' reset to default.")
+    if delete_valid_for:
+        user.valid_for = config.default.valid_for
+        click.echo(f"Validity period for user '{username}' reset to default.")
+
+    try:
+        config.save_to_yaml(config_file)
+        click.echo(f"User '{username}' updated successfully.")
+    except Exception as e:
+        click.echo(f"Error saving configuration: {e}", err=True)
+
+
+@cli.group()
+def show():
+    """Show configuration."""
+    pass
+
+
+@show.command(name="all")
+@click.pass_context
+def show_all(ctx):
+    """Show the entire configuration."""
+    config: AppConfig = ctx.obj["CONFIG"]
+    click.echo(yaml.dump(config.to_dict(), default_flow_style=False))
+
+
+@show.command(name="defaults")
+@click.pass_context
+def show_defaults(ctx):
+    """Show the default configuration."""
+    config: AppConfig = ctx.obj["CONFIG"]
+    defaults = config.default.model_dump(exclude_none=True)
+    if defaults:
+        click.echo(yaml.dump({"default": defaults}, default_flow_style=False))
+    else:
+        click.echo("No default configuration found.")
+
+
+@show.command(name="user")
+@click.argument("username")
+@click.pass_context
+def show_user(ctx, username):
+    """Show configuration for a specific user."""
+    config: AppConfig = ctx.obj["CONFIG"]
+    user_config = config.get_user_full_config(username)
+    if user_config:
+        user_dict = user_config.model_dump(exclude={"username"}, exclude_none=True)
+        click.echo(yaml.dump({username: user_dict}, default_flow_style=False))
+    else:
+        click.echo(f"User '{username}' not found.")
 
 
 if __name__ == "__main__":
