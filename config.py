@@ -26,7 +26,7 @@ class UserConfig(BaseModel):
     def password_hash(self, password: str) -> str:
         salt = os.urandom(16)
         hashed_password = hashlib.scrypt(
-            password.encode("utf-8"), salt=salt, n=2**14, r=2, p=1
+            password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1
         )
         return base64.b64encode(salt + hashed_password).decode("utf-8")
 
