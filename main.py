@@ -115,7 +115,7 @@ def sign_certificate(user_config: config_module.UserConfig) -> Tuple[SSHKey, SSH
 
     return new_user_key, user_certificate
 
-def handle_client(process: asyncssh.SSHServerProceess) -> None:
+def handle_client(process: asyncssh.SSHServerProcess) -> None:
     process.stdout.write("SSH Keys added to agent. Bye\n")
     process.exit(0)
 
