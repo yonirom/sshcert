@@ -115,6 +115,9 @@ def sign_certificate(user_config: config_module.UserConfig) -> Tuple[SSHKey, SSH
 
     return new_user_key, user_certificate
 
+def handle_client(process: asyncssh.SSHServerProceess) -> None:
+    process.stdout.write("SSH Keys added to agent. Bye\n")
+    process.exit(0)
 
 class EntryPoint():
 
@@ -147,6 +150,7 @@ class EntryPoint():
             server_host_keys=SETTINGS.host_private_key_file,
             agent_forwarding=True,
             connect_timeout="5s",
+            process_factory=handle_client,
             login_timeout="10s")
         await asyncssh.listen(str(SETTINGS.listen_address), SETTINGS.listen_port, reuse_address=True, options=options)
 

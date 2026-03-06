@@ -13,6 +13,7 @@ dependencies = [
     "pytimeparse>=1.1.8",
     "watchfiles>=1.1.0",
     "pydantic-settings>=2.11.0",
+    "pydantic>=2.12.5",
 ]
 
 [dependency-groups]
