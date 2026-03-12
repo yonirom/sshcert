@@ -22,6 +22,10 @@ Please contact system administrator for access.
 ==================================================
 """
 
+POST_AUTH_BANNER = """
+Signed SSH key added to your local agent. Bye
+"""
+
 
 DEFAULT_CONFIG = """
 default:
@@ -44,6 +48,7 @@ class Settings(BaseSettings):
     listen_address: IPvAnyAddress = IPv4Address('0.0.0.0') 
     listen_port: int = 2222
     pre_auth_banner: str = PRE_AUTH_BANNER
+    post_auth_banner: str = POST_AUTH_BANNER
     server_version: str = f"SSHCert-v{__VERSION__}"
 
 

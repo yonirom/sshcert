@@ -22,6 +22,28 @@ logging.getLogger("watchfiles.main").setLevel(logging.INFO)
 SETTINGS = Settings()
 
 
+# 1. Define the session handler (the "server-side" session)
+class SSHCertServerSession(asyncssh.SSHServerSession):
+
+    def __init__(self, conn: asyncssh.SSHServerConnection) -> None:
+        super().__init__()
+        self._conn = conn
+        self._chan: asyncssh.SSHServerChannel = None
+
+    def connection_made(self, chan: asyncssh.SSHServerChannel):
+        self._chan = chan
+
+    def session_started(self) -> None:
+        self._chan.write(SETTINGS.post_auth_banner)
+        self._chan.write_eof()
+        self._chan.close()
+        self._conn.close()
+
+    def shell_requested(self):
+        # Allow shell requests
+        return True
+        
+
 class SSHCertSignerServer(asyncssh.SSHServer):
     def __init__(self, app_config: config_module.AppConfig):
         self.app_config: config_module.AppConfig = app_config
@@ -61,7 +83,7 @@ class SSHCertSignerServer(asyncssh.SSHServer):
                 await self.agent_connection.remove_keys([key])
 
         await self.agent_connection.add_keys(sign_certificate(self.user_config))
-        return asyncssh.SSHServerSession()
+        return SSHCertServerSession(self._conn)
 
     async def validate_password(self, username, password):
         if self.user_found:
@@ -115,10 +137,6 @@ def sign_certificate(user_config: config_module.UserConfig) -> Tuple[SSHKey, SSH
 
     return new_user_key, user_certificate
 
-def handle_client(process: asyncssh.SSHServerProcess) -> None:
-    process.stdout.write("SSH Keys added to agent. Bye\n")
-    process.exit(0)
-
 class EntryPoint():
 
     def __init__(self) -> None:
@@ -150,7 +168,6 @@ class EntryPoint():
             server_host_keys=SETTINGS.host_private_key_file,
             agent_forwarding=True,
             connect_timeout="5s",
-            process_factory=handle_client,
             login_timeout="10s")
         await asyncssh.listen(str(SETTINGS.listen_address), SETTINGS.listen_port, reuse_address=True, options=options)
 
